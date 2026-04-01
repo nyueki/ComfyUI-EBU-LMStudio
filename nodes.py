@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 import comfy.model_management as model_management
 from urllib.parse import urlparse
+import folder_paths
 class AnyType(str):
     """A special class that is always equal in not-equal comparisons. Allows accepting any input type."""
     def __ne__(self, __value: object) -> bool:
@@ -62,6 +63,29 @@ def send_to_lm_studio(client_config, messages, max_tokens, temp, top_p, seed, js
         raise ValueError(f"LM Studio API Error {response.status_code}: {response.text}")
     except requests.exceptions.RequestException as e:
         raise ValueError(f"LM Studio Connection Failed: {str(e)}")
+def parse_txt_prompts():
+    """Scans the ComfyUI input directory for .txt files and parses formatted prompts."""
+    input_dir = folder_paths.get_input_directory()
+    parsed_prompts = {}
+    for file in os.listdir(input_dir):
+        if file.endswith('.txt'):
+            filepath = os.path.join(input_dir, file)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                matches = re.finditer(r'#\s*([^{]+?)\s*\{([^}]*)\}', content)
+                for m in matches:
+                    raw_title = m.group(1).strip()
+                    clean_title = re.sub(r'\\', '', raw_title).strip()
+                    raw_content = m.group(2).strip()
+                    clean_content = re.sub(r'\\s*', '', raw_content)
+                    dropdown_name = f"{clean_title} ({file})"
+                    parsed_prompts[dropdown_name] = clean_content
+            except Exception as e:
+                print(f"[LMStudio] Error parsing {file}: {e}")
+    if not parsed_prompts:
+        parsed_prompts["NO PROMPTS FOUND - UPLOAD TXT FILE AND REFRESH"] = ""
+    return parsed_prompts
 class EbuLMStudioLoader:
     """
     Loads a model into LM Studio VRAM via CLI and outputs an LM_CLIENT config.
@@ -144,7 +168,7 @@ class EbuLMStudioLoader:
         return ({"url": url, "model_identifier": desired_identifier}, desired_identifier)
 class EbuLMStudioChat:
     """
-    Primary API request node. Supports Vision, JSON mode, and Chat History.
+    Primary API request node. Supports Vision, JSON mode, Chat History, and Qwen3.5 Thinking.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -176,8 +200,7 @@ class EbuLMStudioChat:
         if chat_history is not None:
             messages.extend(chat_history)
         else:
-            if system_message.strip():
-                messages.append({"role": "system", "content": system_message})
+            messages.append({"role": "system", "content": system_message.strip()})
         user_content = user_prompt
         if image is not None:
             base64_image = tensor_to_base64_jpeg(image)
@@ -260,15 +283,36 @@ class EbuLMStudioUnload:
         except Exception as e:
             print(f"[lms-node] unload_all failed: {e}", file=sys.stderr)
             return (any_trigger,)
+class EbuLMStudioPromptDropdown:
+    """
+    Automatically parses .txt files in the input directory and creates a dropdown of system prompts.
+    """
+    @classmethod
+    def INPUT_TYPES(s):
+        s.prompt_dictionary = parse_txt_prompts()
+        return {
+            "required": {
+                "selected_prompt": (list(s.prompt_dictionary.keys()), ),
+            }
+        }
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("system_prompt",)
+    FUNCTION = "get_prompt"
+    CATEGORY = "LMStudio"
+    def get_prompt(self, selected_prompt):
+        content = self.prompt_dictionary.get(selected_prompt, "")
+        return (content,)
 NODE_CLASS_MAPPINGS = {
     "EbuLMStudioLoader": EbuLMStudioLoader,
     "EbuLMStudioChat": EbuLMStudioChat,
     "EbuLMStudioBrainstormer": EbuLMStudioBrainstormer,
     "EbuLMStudioUnload": EbuLMStudioUnload,
+    "EbuLMStudioPromptDropdown": EbuLMStudioPromptDropdown,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "EbuLMStudioLoader": "EBU LMStudio Loader",
     "EbuLMStudioChat": "EBU LMStudio Chat / Vision",
     "EbuLMStudioBrainstormer": "EBU LMStudio Brainstormer",
     "EbuLMStudioUnload": "EBU LMStudio Universal Unload",
+    "EbuLMStudioPromptDropdown": "EBU LMStudio Prompt Dropdown",
 }
